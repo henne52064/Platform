@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 import argparse
 import re
+import glob
+import logging
+import pandas as pd
 from datetime import datetime, date, time, timedelta, timezone
 from pathlib import Path
 
@@ -38,8 +41,8 @@ def resolve_timeframe(start_input: str, end_or_duration) -> tuple[datetime, date
 
 def fetch_candidates(start_dt: datetime, end_dt: datetime) -> list[str]:
     """
-    Fetches candidate object keys from MinIO within [start_dt, end_dt] lexicographical bounds.
-    Stops requesting additional pages as soon as an object key exceeds end_dt.
+    fetch candidate object keys from store within [start_dt, end_dt] bounds
+    stops requesting additional pages as soon as an object key exceeds end_dt
     """
 
     s = Client()
@@ -58,7 +61,6 @@ def fetch_candidates(start_dt: datetime, end_dt: datetime) -> list[str]:
     for object in objects:
         key = object.object_name
         # EXIT LIMIT: Stop as soon as keys exceed end_dt
-        # Breaking out of this loop prevents MinIO from requesting further pages
         if key > end_key:
             break
 
@@ -100,11 +102,32 @@ def get_files(candidates: list[str]):  # TODO: fix pull function to accept lists
         pull(s, pull_args)
 
 
-def authenticate_files(): ...
+def authenticate_files():
 
+    files = sorted(glob.glob(LOCAL_TMP + "*.parquet"))
 
-def merge_files(): ...
+    for file in files:
 
+        df = pd.read_parquet(file, columns=[])
+
+        is_sorted = df.index.is_monotonic_increasing
+        if not is_sorted:
+            logging.warning(
+                f"Timestamps in '{file}' are not monotonically increasing."
+            )
+        else:
+            continue
+
+def merge_files():
+
+    files = sorted(glob.glob(LOCAL_TMP + "*.parquet"))
+
+    df = pd.concat([pd.read_parquet(f) for f in files])
+
+    df.to_parquet(LOCAL_TMP + "merged.parquet")
+
+    for file in files:
+        Path(file).unlink()
 
 def parquet_merger(args):
 
@@ -125,8 +148,10 @@ def parquet_merger(args):
     get_files(candidates)
 
     # TODO authenticate files
+    authenticate_files()
 
     # TODO merge files
+    merge_files()
 
     return 0
 
