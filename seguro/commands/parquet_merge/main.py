@@ -102,21 +102,63 @@ def get_files(candidates: list[str]):  # TODO: fix pull function to accept lists
         pull(s, pull_args)
 
 
-def authenticate_files():
+def authenticate_files(epsilon=pd.Timedelta(seconds=30)):
 
     files = sorted(glob.glob(LOCAL_TMP + "*.parquet"))
 
+    filename_dates = []
+
     for file in files:
+
+        clean_name = file.removesuffix(".parquet").split("/")[-1]
+
+        file_dt = datetime.fromisoformat(clean_name)
+        filename_dates.append(file_dt)
 
         df = pd.read_parquet(file, columns=[])
 
-        is_sorted = df.index.is_monotonic_increasing
-        if not is_sorted:
+        # print(f"first sample of {file}: {df.index[0].isoformat()}")
+        # print(f"last sample of {file}: {df.index[-1].isoformat()}")
+
+        if not df.index.is_monotonic_increasing:
+            logging.warning(f"Timestamps in '{file}' are not monotonically increasing.")
+
+        # Filename states BEGINNING of sample time frame
+        first_time_sample = df.index[0]
+
+        first_ts = datetime.fromisoformat(first_time_sample.isoformat())
+
+        if first_ts.tzinfo is None:
+            first_ts = first_ts.replace(tzinfo=timezone.utc)  # ASSUMING GATEWAY GIVES UTC TIMESTAMPS
+
+        if first_ts < file_dt - pd.Timedelta(
+            seconds=1
+        ):  # check that first sample of file has timestamp later than filename
             logging.warning(
-                f"Timestamps in '{file}' are not monotonically increasing."
+                f"File '{file}' contains sample timestamps ({first_ts}) "
+                f"that occur on or before the file timestamp ({file_dt})."
             )
-        else:
-            continue
+
+    if len(filename_dates) < 2:
+        return
+
+    dates_series = pd.Series(filename_dates)
+    time_diffs = dates_series.diff().dropna()
+
+    median_diff = time_diffs.median()
+    threshold = median_diff + epsilon
+    # print(f"median_diff {median_diff}")
+    # print(f"threshold {threshold}")
+
+    for idx, diff in enumerate(time_diffs, start=1):
+        if diff > threshold:
+            prev_file = files[idx - 1]
+            curr_file = files[idx]
+            logging.warning(
+                f"Time gap detected between '{prev_file}' and '{curr_file}': "
+                f"Difference is {diff} (Expected ~{median_diff}, Threshold: {threshold})"
+            )
+
 
 def merge_files():
 
@@ -126,8 +168,18 @@ def merge_files():
 
     df.to_parquet(LOCAL_TMP + "merged.parquet")
 
+    merged_df = pd.read_parquet(LOCAL_TMP + "merged.parquet", columns=[])
+
+    if not merged_df.index.is_monotonic_increasing:
+        logging.warning(f"Timestamp in merged file are not monotonically increasing.")
+
+    print(
+        f"Merged file: First sample at {merged_df.index[0].isoformat()} last sample at {merged_df.index[-1].isoformat()}"
+    )
+
     for file in files:
         Path(file).unlink()
+
 
 def parquet_merger(args):
 
@@ -141,9 +193,6 @@ def parquet_merger(args):
 
     candidates = fetch_candidates(start_dt, end_dt)
 
-    for candidate in candidates:
-        print(candidate)
-
     # TODO pull candidates
     get_files(candidates)
 
@@ -154,6 +203,9 @@ def parquet_merger(args):
     merge_files()
 
     return 0
+
+
+# TODO add choosing of gateway and final location of merged file
 
 
 def main():
