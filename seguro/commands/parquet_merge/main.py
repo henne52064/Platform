@@ -14,7 +14,7 @@ from seguro.commands.s3_tool.main import push, pull, remove, list_elements
 from seguro.common.store import Client
 
 LOCAL_TMP = ".LOCAL/"
-REMOTE_FOLDER = "data/measurements/demo-data/"
+REMOTE_FOLDER = "data/measurements/"
 
 
 def get_time(args):
@@ -39,7 +39,7 @@ def resolve_timeframe(start_input: str, end_or_duration) -> tuple[datetime, date
     return start_dt, end_dt
 
 
-def fetch_candidates(start_dt: datetime, end_dt: datetime) -> list[str]:
+def fetch_candidates(start_dt: datetime, end_dt: datetime, args) -> list[str]:
     """
     fetch candidate object keys from store within [start_dt, end_dt] bounds
     stops requesting additional pages as soon as an object key exceeds end_dt
@@ -47,12 +47,12 @@ def fetch_candidates(start_dt: datetime, end_dt: datetime) -> list[str]:
 
     s = Client()
 
-    start_after_key = f"{REMOTE_FOLDER}{start_dt.isoformat()}.parquet"
-    end_key = f"{REMOTE_FOLDER}{end_dt.isoformat()}.parquet"
+    start_after_key = f"{REMOTE_FOLDER + args.gateway}{start_dt.isoformat()}.parquet"
+    end_key = f"{REMOTE_FOLDER + args.gateway}{end_dt.isoformat()}.parquet"
 
     objects = s.client.list_objects(
         bucket_name=s.bucket,
-        prefix=REMOTE_FOLDER,
+        prefix=REMOTE_FOLDER + args.gateway,
         start_after=start_after_key,
     )
 
@@ -105,7 +105,7 @@ def get_files(candidates: list[str]):  # TODO: fix pull function to accept lists
 def authenticate_files(epsilon=pd.Timedelta(seconds=30)):
 
     files = sorted(glob.glob(LOCAL_TMP + "*.parquet"))
-
+    print(files)
     filename_dates = []
 
     for file in files:
@@ -164,7 +164,10 @@ def merge_files():
 
     files = sorted(glob.glob(LOCAL_TMP + "*.parquet"))
 
-    df = pd.concat([pd.read_parquet(f) for f in files])
+    if len(files) < 2:
+        df = pd.read_parquet(files[1])
+    else:
+        df = pd.concat([pd.read_parquet(f) for f in files])
 
     df.to_parquet(LOCAL_TMP + "merged.parquet")
 
@@ -191,7 +194,11 @@ def parquet_merger(args):
 
     print(f"start: {start_dt.isoformat()}, end: {end_dt.isoformat()}")
 
-    candidates = fetch_candidates(start_dt, end_dt)
+    candidates = fetch_candidates(start_dt, end_dt, args)
+
+    if candidates is None:
+        print("No files found to merge")
+        return
 
     # TODO pull candidates
     get_files(candidates)
@@ -226,6 +233,8 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)  # allows to either have --end or --duration flag
     group.add_argument("-e", "--end", type=str, help="End-Timestamp in ISO 8601 format")
     group.add_argument("-d", "--duration", type=str, help="Duration starting from start-timestamp")
+
+    parser.add_argument("-g", "--gateway", default="demo-data", type=str, help="Gateway to merge sample data from. String in form of <location-id>/<measurement-device_id>/<measurement-point_id>")
 
     parser.set_defaults(func=parquet_merger)
 
