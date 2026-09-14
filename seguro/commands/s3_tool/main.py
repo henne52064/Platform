@@ -45,7 +45,7 @@ def pull(s: store.Client, args):
         remotebase = args.remotefile.split("*", 1)[0]
     else:
         remotebase = args.remotefile
-    objects = list(s.client.list_objects(bucket_name=s.bucket, prefix=remotebase, recursive=True))
+    objects = s.client.list_objects(bucket_name=s.bucket, prefix=remotebase, recursive=True)
 
     if not objects:
         raise FileNotFoundError(f"Remote object not found: {args.remotefile}, nothing was found to be pulled")
@@ -114,7 +114,7 @@ def remove(s: store.Client, args):
         remotebase = args.file.split("*", 1)[0]
     else:
         remotebase = args.file
-    objects = list(s.client.list_objects(bucket_name=s.bucket, prefix=remotebase, recursive=True))
+    objects = s.client.list_objects(bucket_name=s.bucket, prefix=remotebase, recursive=True)
 
     if not objects:
         raise FileNotFoundError(f"Remote object not found: {remotebase}, nothing was removed")
@@ -205,12 +205,10 @@ def list_elements(s: store.Client, args) -> list:
 
     if args.path.endswith("*") or args.globbing:
         pathprefix = Path(args.path.split("*", 1)[0])
-        objects = list(s.client.list_objects(bucket_name=s.bucket, prefix=str(pathprefix), recursive=args.recursive))
+        objects = s.client.list_objects(bucket_name=s.bucket, prefix=str(pathprefix), recursive=args.recursive)
     else:
         remotebase = Path(args.path)
-        objects = list(
-            s.client.list_objects(bucket_name=s.bucket, prefix=(str(remotebase) + "/"), recursive=args.recursive)
-        )
+        objects = s.client.list_objects(bucket_name=s.bucket, prefix=(str(remotebase) + "/"), recursive=args.recursive)
 
     for object in objects:  # get all objects from Store
 
