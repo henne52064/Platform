@@ -113,7 +113,7 @@ def remove(s: store.Client, args):
     if args.file.endswith("*"):
         remotebase = args.file.split("*", 1)[0]
     else:
-        remotebase = args.remotefile
+        remotebase = args.file
     objects = list(s.client.list_objects(bucket_name=s.bucket, prefix=remotebase, recursive=True))
 
     if not objects:
