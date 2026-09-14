@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Henrik Hörter
 # SPDX-License-Identifier: Apache-2.0
+import cProfile
+import pstats
+
 import argparse
 import pandas as pd
 import logging
@@ -415,10 +418,18 @@ def main():
 
     s = store.Client(bucket=args.bucket)
 
+    profiler = cProfile.Profile()
+    profiler.enable()
+
     result = args.func(s, args)
 
     if type(result) is list:
         for element in result:
             print(element)
+        print(len(result))
 
+    profiler.disable()
+    # Print top 20 functions by cumulative time
+    stats = pstats.Stats(profiler).sort_stats('cumtime')
+    stats.print_stats(20)
     return
