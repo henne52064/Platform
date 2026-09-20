@@ -5,16 +5,16 @@ import re
 import glob
 import logging
 import pandas as pd
-from datetime import datetime, date, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from seguro.common import store
 from seguro.common import config
-from seguro.commands.s3_tool.main import push, pull, remove, list_elements
+from seguro.commands.s3_tool.main import pull
 from seguro.common.store import Client
 
 LOCAL_TMP = ".LOCAL/"
 REMOTE_FOLDER = "data/measurements/"
+MERGED_DIR = "merged/"
 
 
 def get_time(args):
@@ -47,12 +47,17 @@ def fetch_candidates(start_dt: datetime, end_dt: datetime, args) -> list[str]:
 
     s = Client()
 
-    start_after_key = f"{REMOTE_FOLDER + args.gateway}{start_dt.isoformat()}.parquet"
-    end_key = f"{REMOTE_FOLDER + args.gateway}{end_dt.isoformat()}.parquet"
+    if args.gateway.endswith("/"):
+        remotepath = args.gateway
+    else:
+        remotepath = args.gateway + "/"
+
+    start_after_key = f"{REMOTE_FOLDER + remotepath}{(start_dt - timedelta(seconds=1)).isoformat()}.parquet"
+    end_key = f"{REMOTE_FOLDER + remotepath}{end_dt.isoformat()}.parquet"
 
     objects = s.client.list_objects(
         bucket_name=s.bucket,
-        prefix=REMOTE_FOLDER + args.gateway,
+        prefix=REMOTE_FOLDER + remotepath,
         start_after=start_after_key,
     )
 
@@ -65,6 +70,9 @@ def fetch_candidates(start_dt: datetime, end_dt: datetime, args) -> list[str]:
             break
 
         candidate_keys.append(key)
+
+    if not candidate_keys:
+        print("candidate keys empty")
 
     return candidate_keys
 
@@ -94,18 +102,17 @@ def parse_duration(value: str) -> timedelta:
 def get_files(candidates: list[str]):  # TODO: fix pull function to accept lists?
 
     s = Client()
-    if not Path(LOCAL_TMP).is_dir():  # TODO: remove probably, setup new everytime
-        Path(LOCAL_TMP).mkdir()
+    Path(LOCAL_TMP).mkdir(parents=True, exist_ok=True)
 
     for candidate in candidates:
         pull_args = argparse.Namespace(localfile=LOCAL_TMP, remotefile=candidate, globbing=False)
         pull(s, pull_args)
 
 
-def authenticate_files(epsilon=pd.Timedelta(seconds=30)):
+def authenticate_files(start_dt: datetime, end_dt: datetime, epsilon: timedelta):  # needs start_dt, end_dt, epsilon
 
     files = sorted(glob.glob(LOCAL_TMP + "*.parquet"))
-    print(files)
+
     filename_dates = []
 
     for file in files:
@@ -116,9 +123,6 @@ def authenticate_files(epsilon=pd.Timedelta(seconds=30)):
         filename_dates.append(file_dt)
 
         df = pd.read_parquet(file, columns=[])
-
-        # print(f"first sample of {file}: {df.index[0].isoformat()}")
-        # print(f"last sample of {file}: {df.index[-1].isoformat()}")
 
         if not df.index.is_monotonic_increasing:
             logging.warning(f"Timestamps in '{file}' are not monotonically increasing.")
@@ -136,10 +140,11 @@ def authenticate_files(epsilon=pd.Timedelta(seconds=30)):
         ):  # check that first sample of file has timestamp later than filename
             logging.warning(
                 f"File '{file}' contains sample timestamps ({first_ts}) "
-                f"that occur on or before the file timestamp ({file_dt})."
+                f"that occur before the file timestamp ({file_dt})."
             )
 
-    if len(filename_dates) < 2:
+    if len(filename_dates) < 2:  # TODO timeframe only includes one file, "merge" single file
+        logging.warning(f"Only one file fitting the timeframe found: {filename_dates[0]}")
         return
 
     dates_series = pd.Series(filename_dates)
@@ -150,34 +155,54 @@ def authenticate_files(epsilon=pd.Timedelta(seconds=30)):
     # print(f"median_diff {median_diff}")
     # print(f"threshold {threshold}")
 
+    first_file = filename_dates[0]
+    last_file = filename_dates[-1]
+
+    start_diff = abs(first_file - start_dt)
+    end_diff = abs(last_file - end_dt)
+
+    if start_diff > threshold:  # check if first file is close to start datetime
+        logging.warning(
+            f"Time gap detected between start date '{start_dt}' and first file '{first_file}': "
+            f"Difference is {start_diff} (Expected ~{median_diff}, Threshold: {threshold})"
+        )
+    if end_diff > threshold:  # check if last file is close to end datetime
+        logging.warning(
+            f"Time gap detected between last file '{last_file}' and end date '{end_dt}': "
+            f"Difference is {end_diff} (Expected ~{median_diff}, Threshold: {threshold})"
+        )
+
     for idx, diff in enumerate(time_diffs, start=1):
         if diff > threshold:
-            prev_file = files[idx - 1]
-            curr_file = files[idx]
+            prev_file = filename_dates[idx - 1]
+            curr_file = filename_dates[idx]
             logging.warning(
                 f"Time gap detected between '{prev_file}' and '{curr_file}': "
                 f"Difference is {diff} (Expected ~{median_diff}, Threshold: {threshold})"
             )
 
 
-def merge_files():
+def merge_files(path: str):  # TODO check if path was given for merged file
+
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
 
     files = sorted(glob.glob(LOCAL_TMP + "*.parquet"))
 
     if len(files) < 2:
-        df = pd.read_parquet(files[1])
+        df = pd.read_parquet(files[0])
     else:
         df = pd.concat([pd.read_parquet(f) for f in files])
 
-    df.to_parquet(LOCAL_TMP + "merged.parquet")
+    df.to_parquet(path)
 
-    merged_df = pd.read_parquet(LOCAL_TMP + "merged.parquet", columns=[])
+    merged_df = pd.read_parquet(path, columns=[])
 
     if not merged_df.index.is_monotonic_increasing:
-        logging.warning(f"Timestamp in merged file are not monotonically increasing.")
+        logging.warning("Timestamp in merged file are not monotonically increasing.")
 
     print(
-        f"Merged file: First sample at {merged_df.index[0].isoformat()} last sample at {merged_df.index[-1].isoformat()}"
+        f"Merged file: First sample at {merged_df.index[0].isoformat()}"
+        f"Last sample at {merged_df.index[-1].isoformat()}"
     )
 
     for file in files:
@@ -196,7 +221,7 @@ def parquet_merger(args):
 
     candidates = fetch_candidates(start_dt, end_dt, args)
 
-    if candidates is None:
+    if len(candidates) == 0:
         print("No files found to merge")
         return
 
@@ -204,10 +229,10 @@ def parquet_merger(args):
     get_files(candidates)
 
     # TODO authenticate files
-    authenticate_files()
+    authenticate_files(start_dt, end_dt, parse_duration(args.epsilon))
 
     # TODO merge files
-    merge_files()
+    merge_files(args.path)
 
     return 0
 
@@ -234,7 +259,24 @@ def main():
     group.add_argument("-e", "--end", type=str, help="End-Timestamp in ISO 8601 format")
     group.add_argument("-d", "--duration", type=str, help="Duration starting from start-timestamp")
 
-    parser.add_argument("-g", "--gateway", default="demo-data", type=str, help="Gateway to merge sample data from. String in form of <location-id>/<measurement-device_id>/<measurement-point_id>")
+    parser.add_argument(
+        "-g",
+        "--gateway",
+        default="demo-data",
+        type=str,
+        help="Gateway to merge sample data from. String in format <location-id>/<device_id>/<point_id>",
+    )
+
+    parser.add_argument(
+        "-p", "--path", default=MERGED_DIR + "merged.parquet", type=str, help="Path where to store merged file"
+    )
+
+    parser.add_argument(
+        "--epsilon",
+        default="30s",
+        type=str,
+        help="Set maximum deviation of timegap between files before giving out a warning",
+    )
 
     parser.set_defaults(func=parquet_merger)
 
