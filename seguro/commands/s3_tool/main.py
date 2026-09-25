@@ -208,7 +208,13 @@ def list_elements(s: store.Client, args) -> list:
         objects = s.client.list_objects(bucket_name=s.bucket, prefix=str(pathprefix), recursive=args.recursive)
     else:
         remotebase = Path(args.path)
-        objects = s.client.list_objects(bucket_name=s.bucket, prefix=(str(remotebase) + "/"), recursive=args.recursive)
+        start_after_prefix = str(remotebase) + "/" + args.start_after
+        objects = s.client.list_objects(
+            bucket_name=s.bucket,
+            prefix=(str(remotebase) + "/"),
+            recursive=args.recursive,
+            start_after=start_after_prefix,
+        )
 
     for object in objects:  # get all objects from Store
 
@@ -317,6 +323,9 @@ def main():
         "--recursive",
         action="store_true",
         help="List all objects and objects of subdirectories that have path as prefix",
+    )
+    list_parser.add_argument(
+        "-s", "--start_after", type=str, help="List all objects with larger lexographical prefix", default=""
     )
 
     list_parser.set_defaults(func=list_elements)
