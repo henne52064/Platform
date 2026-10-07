@@ -3,6 +3,8 @@
 import cProfile
 import pstats
 
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import argparse
 import re
 import glob
@@ -101,16 +103,28 @@ def parse_duration(value: str) -> timedelta:
             total += timedelta(seconds=amount)
     return total
 
+def _download_single(candidate: str):
 
-def get_files(candidates: list[str]):  # TODO: fix pull function to accept lists?
+    # Instantiating the client inside the thread worker ensures thread-safety
 
     s = Client()
+    localfile = LOCAL_TMP + candidate.split("/")[-1]
+    s.get_file(localfile , candidate)
+
+def get_files(candidates: list[str], max_workers: int = 16):
     Path(LOCAL_TMP).mkdir(parents=True, exist_ok=True)
 
-    for candidate in candidates:
-        localfile = LOCAL_TMP + candidate.split("/")[-1]
-        s.get_file(localfile , candidate)
+    # ThreadPoolExecutor to download files in parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
 
+        futures = [
+            executor.submit(_download_single, candidate)
+            for candidate in candidates
+        ]
+
+        #wait for all downloads to complete
+        for future in as_completed(futures):
+            future.result()
 
 def authenticate_files(start_dt: datetime, end_dt: datetime, epsilon: timedelta):  # needs start_dt, end_dt, epsilon
 
