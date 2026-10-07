@@ -108,8 +108,8 @@ def get_files(candidates: list[str]):  # TODO: fix pull function to accept lists
     Path(LOCAL_TMP).mkdir(parents=True, exist_ok=True)
 
     for candidate in candidates:
-        pull_args = argparse.Namespace(localfile=LOCAL_TMP, remotefile=candidate, globbing=False)
-        pull(s, pull_args)
+        localfile = LOCAL_TMP + candidate.split("/")[-1]
+        s.get_file(localfile , candidate)
 
 
 def authenticate_files(start_dt: datetime, end_dt: datetime, epsilon: timedelta):  # needs start_dt, end_dt, epsilon
@@ -207,6 +207,7 @@ def merge_files(path: str):  # TODO check if path was given for merged file
         f"Merged file: First sample at {merged_df.index[0].isoformat()}"
         f"Last sample at {merged_df.index[-1].isoformat()}"
     )
+    print(f"#files merged: {len(files)}")
 
     for file in files:
         Path(file).unlink()
