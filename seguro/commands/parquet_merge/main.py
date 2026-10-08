@@ -3,7 +3,7 @@
 import cProfile
 import pstats
 
-
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import argparse
 import re
@@ -20,6 +20,7 @@ from seguro.common.store import Client
 LOCAL_TMP = ".LOCAL/"
 REMOTE_FOLDER = "data/measurements/"
 MERGED_DIR = "merged/"
+_thread_local = threading.local()
 
 
 def get_time(args):
@@ -50,7 +51,7 @@ def fetch_candidates(start_dt: datetime, end_dt: datetime, args) -> list[str]:
     stops requesting additional pages as soon as an object key exceeds end_dt
     """
 
-    s = Client()
+    s = get_client()
 
     if args.gateway.endswith("/"):
         remotepath = args.gateway
@@ -103,11 +104,16 @@ def parse_duration(value: str) -> timedelta:
             total += timedelta(seconds=amount)
     return total
 
+def get_client():
+    if not hasattr(_thread_local, "client"):
+        _thread_local.client = Client()
+    return _thread_local.client
+
 def _download_single(candidate: str):
 
     # Instantiating the client inside the thread worker ensures thread-safety
 
-    s = Client()
+    s = get_client()
     localfile = LOCAL_TMP + candidate.split("/")[-1]
     s.get_file(localfile , candidate)
 
