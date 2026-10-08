@@ -23,16 +23,13 @@ MERGED_DIR = "merged/"
 _thread_local = threading.local()
 
 
-def get_time(args):
-    print(datetime.fromisoformat(args.at))
-    print(type(args.at))
 
 
 def resolve_timeframe(start_input: str, end_or_duration) -> tuple[datetime, datetime]:
 
     start_dt = datetime.fromisoformat(start_input)
 
-    if start_dt.tzinfo is None:  # check for timezone information TODO: SO FAR ALL OBJECTS ARE UTC +00 ??
+    if start_dt.tzinfo is None:  # check for timezone
         start_dt = start_dt.replace(tzinfo=timezone.utc)
 
     if isinstance(end_or_duration, timedelta):
@@ -111,8 +108,6 @@ def get_client():
 
 def _download_single(candidate: str):
 
-    # Instantiating the client inside the thread worker ensures thread-safety
-
     s = get_client()
     localfile = LOCAL_TMP + candidate.split("/")[-1]
     s.get_file(localfile , candidate)
@@ -120,7 +115,7 @@ def _download_single(candidate: str):
 def get_files(candidates: list[str], max_workers: int = 16):
     Path(LOCAL_TMP).mkdir(parents=True, exist_ok=True)
 
-    # ThreadPoolExecutor to download files in parallel
+    # download files in parallel
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
 
         futures = [
@@ -132,7 +127,7 @@ def get_files(candidates: list[str], max_workers: int = 16):
         for future in as_completed(futures):
             future.result()
 
-def authenticate_files(start_dt: datetime, end_dt: datetime, epsilon: timedelta):  # needs start_dt, end_dt, epsilon
+def authenticate_files(start_dt: datetime, end_dt: datetime, epsilon: timedelta):
 
     files = sorted(glob.glob(LOCAL_TMP + "*.parquet"))
 
@@ -156,7 +151,7 @@ def authenticate_files(start_dt: datetime, end_dt: datetime, epsilon: timedelta)
         first_ts = datetime.fromisoformat(first_time_sample.isoformat())
 
         if first_ts.tzinfo is None:
-            first_ts = first_ts.replace(tzinfo=timezone.utc)  # ASSUMING GATEWAY GIVES UTC TIMESTAMPS
+            first_ts = first_ts.replace(tzinfo=timezone.utc)
 
         if first_ts < file_dt - pd.Timedelta(
             seconds=1
@@ -227,7 +222,7 @@ def merge_files(path: str):  # TODO check if path was given for merged file
         f"Merged file: First sample at {merged_df.index[0].isoformat()}"
         f"Last sample at {merged_df.index[-1].isoformat()}"
     )
-    print(f"#files merged: {len(files)}")
+    print(f"Files merged: {len(files)}")
 
     for file in files:
         Path(file).unlink()
@@ -249,19 +244,16 @@ def parquet_merger(args):
         print("No files found to merge")
         return
 
-    # TODO pull candidates
     get_files(candidates)
 
-    # TODO authenticate files
     authenticate_files(start_dt, end_dt, parse_duration(args.epsilon))
 
-    # TODO merge files
     merge_files(args.path)
 
     return 0
 
 
-# TODO add choosing of gateway and final location of merged file
+# TODO add choosing final location of merged file
 
 
 def main():
