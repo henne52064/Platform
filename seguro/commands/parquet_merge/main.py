@@ -3,26 +3,25 @@
 import cProfile
 import pstats
 
+import pyarrow.parquet as pq
+import pyarrow as pa
+import io
+
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import argparse
 import re
-import glob
 import logging
 import pandas as pd
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from seguro.common import config
-from seguro.commands.s3_tool.main import pull
 from seguro.common.store import Client
 
 LOCAL_TMP = ".LOCAL/"
 REMOTE_FOLDER = "data/measurements/"
 MERGED_DIR = "merged/"
 _thread_local = threading.local()
-
-
 
 
 def resolve_timeframe(start_input: str, end_or_duration) -> tuple[datetime, datetime]:
@@ -42,13 +41,11 @@ def resolve_timeframe(start_input: str, end_or_duration) -> tuple[datetime, date
     return start_dt, end_dt
 
 
-def fetch_candidates(start_dt: datetime, end_dt: datetime, args) -> list[str]:
+def fetch_candidates(s: Client, start_dt: datetime, end_dt: datetime, args) -> list[str]:
     """
     fetch candidate object keys from store within [start_dt, end_dt] bounds
     stops requesting additional pages as soon as an object key exceeds end_dt
     """
-
-    s = get_client()
 
     if args.gateway.endswith("/"):
         remotepath = args.gateway
@@ -101,77 +98,63 @@ def parse_duration(value: str) -> timedelta:
             total += timedelta(seconds=amount)
     return total
 
+
 def get_client():
     if not hasattr(_thread_local, "client"):
         _thread_local.client = Client()
     return _thread_local.client
 
-def _download_single(candidate: str):
 
-    s = get_client()
-    localfile = LOCAL_TMP + candidate.split("/")[-1]
-    s.get_file(localfile , candidate)
+def process_and_merge(
+    candidates: list[str],
+    client: Client,
+    output_path: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    epsilon: timedelta,
+    max_workers: int = 16,
+):
+    """
+    Downloads parquet files concurrently into memory, validates metadata on the fly,
+    and merges them into a single output file using PyArrow.
+    """
+    tables = [None] * len(candidates)
+    sorted_candidates = sorted(candidates)
+    filename_dates: list[datetime | None] = [None] * len(candidates)
 
-def get_files(candidates: list[str], max_workers: int = 16):
-    Path(LOCAL_TMP).mkdir(parents=True, exist_ok=True)
+    def _download_and_parse(idx: int, candidate: str):
+        # Fetch directly into bytes buffer
+        # work with http response object to avoid disk I/O
+        response = client.client.get_object(client.bucket, candidate)
 
-    # download files in parallel
+        data_bytes = response.read()
+        buffer = io.BytesIO(data_bytes)
+
+        table = pq.read_table(buffer)
+
+        # Fast validation using PyArrow / pandas index metadata without full DataFrame overhead
+        df_stub = table.select([]).to_pandas()
+        if not df_stub.index.is_monotonic_increasing:
+            logging.warning(f"Timestamps in '{candidate}' are not monotonically increasing.")
+
+        return idx, table
+
+    # Parallel download & in-memory parse
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-
-        futures = [
-            executor.submit(_download_single, candidate)
-            for candidate in candidates
-        ]
-
-        #wait for all downloads to complete
+        futures = [executor.submit(_download_and_parse, i, candidate) for i, candidate in enumerate(sorted_candidates)]
         for future in as_completed(futures):
-            future.result()
+            idx, table = future.result()
+            tables[idx] = table  # Keep original key order
+            clean_name = candidates[idx].removesuffix(".parquet").split("/")[-1]
+            filename_dates[idx] = datetime.fromisoformat(clean_name)
 
-def authenticate_files(start_dt: datetime, end_dt: datetime, epsilon: timedelta):
-
-    files = sorted(glob.glob(LOCAL_TMP + "*.parquet"))
-
-    filename_dates = []
-
-    for file in files:
-
-        clean_name = file.removesuffix(".parquet").split("/")[-1]
-
-        file_dt = datetime.fromisoformat(clean_name)
-        filename_dates.append(file_dt)
-
-        df = pd.read_parquet(file, columns=[])
-
-        if not df.index.is_monotonic_increasing:
-            logging.warning(f"Timestamps in '{file}' are not monotonically increasing.")
-
-        # Filename states BEGINNING of sample time frame
-        first_time_sample = df.index[0]
-
-        first_ts = datetime.fromisoformat(first_time_sample.isoformat())
-
-        if first_ts.tzinfo is None:
-            first_ts = first_ts.replace(tzinfo=timezone.utc)
-
-        if first_ts < file_dt - pd.Timedelta(
-            seconds=1
-        ):  # check that first sample of file has timestamp later than filename
-            logging.warning(
-                f"File '{file}' contains sample timestamps ({first_ts}) "
-                f"that occur before the file timestamp ({file_dt})."
-            )
-
-    if len(filename_dates) < 2:  # TODO timeframe only includes one file, "merge" single file
-        logging.warning(f"Only one file fitting the timeframe found: {filename_dates[0]}")
-        return
+    # Check filename timestamps
 
     dates_series = pd.Series(filename_dates)
     time_diffs = dates_series.diff().dropna()
 
-    median_diff = time_diffs.median()
+    median_diff = pd.Timedelta(time_diffs.median())
     threshold = median_diff + epsilon
-    # print(f"median_diff {median_diff}")
-    # print(f"threshold {threshold}")
 
     first_file = filename_dates[0]
     last_file = filename_dates[-1]
@@ -199,36 +182,15 @@ def authenticate_files(start_dt: datetime, end_dt: datetime, epsilon: timedelta)
                 f"Difference is {diff} (Expected ~{median_diff}, Threshold: {threshold})"
             )
 
+    # Combine PyArrow tables zero-copy & write directly
+    merged_table = pa.concat_tables(tables)
+    pq.write_table(merged_table, output_path)
 
-def merge_files(path: str):  # TODO check if path was given for merged file
-
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-
-    files = sorted(glob.glob(LOCAL_TMP + "*.parquet"))
-
-    if len(files) < 2:
-        df = pd.read_parquet(files[0])
-    else:
-        df = pd.concat([pd.read_parquet(f) for f in files])
-
-    df.to_parquet(path)
-
-    merged_df = pd.read_parquet(path, columns=[])
-
-    if not merged_df.index.is_monotonic_increasing:
-        logging.warning("Timestamp in merged file are not monotonically increasing.")
-
-    print(
-        f"Merged file: First sample at {merged_df.index[0].isoformat()}"
-        f"Last sample at {merged_df.index[-1].isoformat()}"
-    )
-    print(f"Files merged: {len(files)}")
-
-    for file in files:
-        Path(file).unlink()
+    print(f"Successfully merged {len(candidates)} files into {output_path}")
 
 
 def parquet_merger(args):
+    client = Client()
 
     if args.end is not None and args.duration is None:
         start_dt, end_dt = resolve_timeframe(args.start, args.end)
@@ -238,22 +200,22 @@ def parquet_merger(args):
 
     print(f"start: {start_dt.isoformat()}, end: {end_dt.isoformat()}")
 
-    candidates = fetch_candidates(start_dt, end_dt, args)
+    candidates = fetch_candidates(client, start_dt, end_dt, args)
 
     if len(candidates) == 0:
         print("No files found to merge")
         return
 
-    get_files(candidates)
-
-    authenticate_files(start_dt, end_dt, parse_duration(args.epsilon))
-
-    merge_files(args.path)
+    process_and_merge(
+        candidates=candidates,
+        client=client,
+        output_path=args.path,
+        start_dt=start_dt,
+        end_dt=end_dt,
+        epsilon=parse_duration(args.epsilon),
+    )
 
     return 0
-
-
-# TODO add choosing final location of merged file
 
 
 def main():
@@ -305,12 +267,12 @@ def main():
     profiler.enable()
     args.func(args)
 
-
     profiler.disable()
 
-    stats = pstats.Stats(profiler).sort_stats('cumtime')
+    stats = pstats.Stats(profiler).sort_stats("cumtime")
     stats.print_stats(20)
     return
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
