@@ -2,12 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 import cProfile
 import pstats
-
 import pyarrow.parquet as pq
 import pyarrow as pa
 import io
-
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import argparse
 import re
@@ -21,7 +18,6 @@ from seguro.common.store import Client
 LOCAL_TMP = ".LOCAL/"
 REMOTE_FOLDER = "data/measurements/"
 MERGED_DIR = "merged/"
-_thread_local = threading.local()
 
 
 def resolve_timeframe(start_input: str, end_or_duration) -> tuple[datetime, datetime]:
@@ -99,12 +95,6 @@ def parse_duration(value: str) -> timedelta:
     return total
 
 
-def get_client():
-    if not hasattr(_thread_local, "client"):
-        _thread_local.client = Client()
-    return _thread_local.client
-
-
 def process_and_merge(
     candidates: list[str],
     client: Client,
@@ -116,7 +106,7 @@ def process_and_merge(
 ):
     """
     Downloads parquet files concurrently into memory, validates metadata on the fly,
-    and merges them into a single output file using PyArrow.
+    and merges them into a single output file using PyArrow
     """
     tables = [None] * len(candidates)
     sorted_candidates = sorted(candidates)
@@ -132,14 +122,14 @@ def process_and_merge(
 
         table = pq.read_table(buffer)
 
-        # Fast validation using PyArrow / pandas index metadata without full DataFrame overhead
+        # use PyArrow for faster validation, load index to pandas without full dataframe overhead
         df_stub = table.select([]).to_pandas()
         if not df_stub.index.is_monotonic_increasing:
             logging.warning(f"Timestamps in '{candidate}' are not monotonically increasing.")
 
         return idx, table
 
-    # Parallel download & in-memory parse
+    # Parallel download & sort file to correct position
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(_download_and_parse, i, candidate) for i, candidate in enumerate(sorted_candidates)]
         for future in as_completed(futures):
