@@ -11,6 +11,8 @@ import re
 import logging
 import pandas as pd
 from datetime import datetime, timedelta, timezone
+from itertools import groupby
+from pathlib import Path
 
 from seguro.common import config
 from seguro.common.store import Client
@@ -95,7 +97,7 @@ def parse_duration(value: str) -> timedelta:
     return total
 
 
-def process_and_merge(
+def get_data(
     candidates: list[str],
     client: Client,
     output_path: str,
@@ -172,11 +174,61 @@ def process_and_merge(
                 f"Difference is {diff} (Expected ~{median_diff}, Threshold: {threshold})"
             )
 
-    # Combine PyArrow tables zero-copy & write directly
-    merged_table = pa.concat_tables(tables)
-    pq.write_table(merged_table, output_path)
+    # zip data to combine filename with table
+    data = zip(filename_dates, tables)
 
-    print(f"Successfully merged {len(candidates)} files into {output_path}")
+    return data
+
+
+def merger(data: zip, output_path: str, recurrence: str):
+
+    def extract_calendar_date(pair):
+        return pair[0].date()
+
+    def extract_isocalendar(pair):
+        return pair[0].isocalendar()
+
+    def extract_year_month(pair):
+        date_obj = pair[0]
+        return (date_obj.year, date_obj.month)
+
+    if recurrence == "single":
+        tables_to_merge = [table for _, table in data]
+        merged_table = pa.concat_tables(tables_to_merge)
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(merged_table, output_path + "merged.parquet")
+
+    # daily
+    # output structure year/month/week/day
+    if recurrence == "daily":
+
+        for current_date, group in groupby(data, key=extract_calendar_date):
+            daily_tables = [table for _, table in group]
+            merged_daily_table = pa.concat_tables(daily_tables)
+            print(f"{current_date}")
+            path = output_path + str(current_date.year) + "/" + str(current_date.month)
+            Path(path).mkdir(parents=True, exist_ok=True)
+            pq.write_table(merged_daily_table, path + "/" + str(current_date) + ".parquet")
+
+    # weekly
+    # output structure year/month/week
+    if recurrence == "weekly":
+        for isodate, group in groupby(data, key=extract_isocalendar):
+            weekly_tables = [table for _, table in group]
+            merged_weekly_table = pa.concat_tables(weekly_tables)
+            path = output_path + str(isodate.year) + "/weekly"
+            Path(path).mkdir(parents=True, exist_ok=True)
+            pq.write_table(merged_weekly_table, path + "/CW_" + str(isodate.week) + ".parquet")
+
+    # monthly
+    # output structure year/month
+    if recurrence == "monthly":
+        for current_date, group in groupby(data, key=extract_calendar_date):
+            monthly_tables = [table for _, table in group]
+            merged_monthly_table = pa.concat_tables(monthly_tables)
+            path = output_path + str(current_date.year) + "/" + str(current_date.month)
+            Path(path).mkdir(parents=True, exist_ok=True)
+            pq.write_table(merged_monthly_table, path + "/month_" + str(current_date.month) + ".parquet")
 
 
 def parquet_merger(args):
@@ -196,7 +248,7 @@ def parquet_merger(args):
         print("No files found to merge")
         return
 
-    process_and_merge(
+    data = get_data(
         candidates=candidates,
         client=client,
         output_path=args.path,
@@ -204,6 +256,8 @@ def parquet_merger(args):
         end_dt=end_dt,
         epsilon=parse_duration(args.epsilon),
     )
+
+    merger(data=data, output_path=args.path, recurrence=args.recurrence)
 
     return 0
 
@@ -236,7 +290,19 @@ def main():
     )
 
     parser.add_argument(
-        "-p", "--path", default=MERGED_DIR + "merged.parquet", type=str, help="Path where to store merged file"
+        "-p",
+        "--path",
+        default=MERGED_DIR,  # + "merged.parquet",
+        type=str,
+        help="Path or directory where to store merged file",
+    )
+
+    parser.add_argument(
+        "-r",
+        "--recurrence",
+        default="single",
+        type=str,
+        help="Size of merged files: daily, weekly or monthly (day, week, month)",
     )
 
     parser.add_argument(
@@ -249,6 +315,9 @@ def main():
     parser.set_defaults(func=parquet_merger)
 
     args = parser.parse_args()
+
+    if not args.path.endswith("/"):
+        args.path = args.path + "/"
 
     if args.end is None and args.duration is None:
         parser.error("Use either --end or --duration, not both.")
