@@ -195,7 +195,7 @@ def merger(data: zip, output_path: str, recurrence: str):
     if recurrence == "single":
         tables_to_merge = [table for _, table in data]
         merged_table = pa.concat_tables(tables_to_merge)
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).mkdir(parents=True, exist_ok=True)
         pq.write_table(merged_table, output_path + "merged.parquet")
 
     # daily
@@ -206,29 +206,29 @@ def merger(data: zip, output_path: str, recurrence: str):
             daily_tables = [table for _, table in group]
             merged_daily_table = pa.concat_tables(daily_tables)
             print(f"{current_date}")
-            path = output_path + str(current_date.year) + "/" + str(current_date.month)
+            path = output_path + "daily/" + str(current_date.year) + "/" + str(current_date.month)
             Path(path).mkdir(parents=True, exist_ok=True)
             pq.write_table(merged_daily_table, path + "/" + str(current_date) + ".parquet")
 
     # weekly
     # output structure year/month/week
     if recurrence == "weekly":
-        for isodate, group in groupby(data, key=extract_isocalendar):
+        for (year, week), group in groupby(data, key=extract_isocalendar):
             weekly_tables = [table for _, table in group]
             merged_weekly_table = pa.concat_tables(weekly_tables)
-            path = output_path + str(isodate.year) + "/weekly"
+            path = output_path + "weekly/" + str(year)
             Path(path).mkdir(parents=True, exist_ok=True)
-            pq.write_table(merged_weekly_table, path + "/CW_" + str(isodate.week) + ".parquet")
+            pq.write_table(merged_weekly_table, path  + "/CW_" + str(week) + ".parquet")
 
     # monthly
     # output structure year/month
     if recurrence == "monthly":
-        for current_date, group in groupby(data, key=extract_calendar_date):
+        for (year, month), group in groupby(data, key=extract_year_month):
             monthly_tables = [table for _, table in group]
             merged_monthly_table = pa.concat_tables(monthly_tables)
-            path = output_path + str(current_date.year) + "/" + str(current_date.month)
+            path = output_path + "monthly/" + str(year)
             Path(path).mkdir(parents=True, exist_ok=True)
-            pq.write_table(merged_monthly_table, path + "/month_" + str(current_date.month) + ".parquet")
+            pq.write_table(merged_monthly_table, path + "/month_" + str(month) + ".parquet")
 
 
 def parquet_merger(args):
