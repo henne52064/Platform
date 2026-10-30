@@ -144,7 +144,6 @@ def get_data(
 
         expected = pd.Timedelta(int(median_ns), unit="ns")
 
-
         for pos in np.flatnonzero(diffs_ns > upper_ns):
             logging.warning(
                 f"Sample gap detected in '{candidate}' between '{index[pos]}' and '{index[pos + 1]}': "
@@ -158,7 +157,7 @@ def get_data(
                 f"(Expected ~{expected}, Threshold: {pd.Timedelta(int(lower_ns), unit='ns')})"
             )
 
-        return idx,table
+        return idx, table
 
     # Parallel download & sort file to correct position
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -179,7 +178,6 @@ def get_data(
 
     first_file = filename_dates[0]
     last_file = filename_dates[-1]
-
 
     start_diff = abs(first_file - start_dt)
     end_diff = abs(last_file - end_dt)
@@ -216,7 +214,8 @@ def merger(data: zip, output_path: str, recurrence: str):
         return pair[0].date()
 
     def extract_isocalendar(pair):
-        return pair[0].isocalendar()
+        iso_year, iso_week, _ = pair[0].isocalendar()
+        return (iso_year, iso_week)
 
     def extract_year_month(pair):
         date_obj = pair[0]
@@ -229,29 +228,28 @@ def merger(data: zip, output_path: str, recurrence: str):
         pq.write_table(merged_table, output_path + "merged.parquet")
 
     # daily
-    # output structure year/month/week/day
+    # output structure daily/year/month/{date}.parquet
     if recurrence == "daily":
 
         for current_date, group in groupby(data, key=extract_calendar_date):
             daily_tables = [table for _, table in group]
             merged_daily_table = pa.concat_tables(daily_tables)
-            print(f"{current_date}")
             path = output_path + "daily/" + str(current_date.year) + "/" + str(current_date.month)
             Path(path).mkdir(parents=True, exist_ok=True)
             pq.write_table(merged_daily_table, path + "/" + str(current_date) + ".parquet")
 
     # weekly
-    # output structure year/month/week
+    # output structure weekly/{year}_CW_{week}.parquet
     if recurrence == "weekly":
         for (year, week), group in groupby(data, key=extract_isocalendar):
             weekly_tables = [table for _, table in group]
             merged_weekly_table = pa.concat_tables(weekly_tables)
             path = output_path + "weekly/" + str(year)
             Path(path).mkdir(parents=True, exist_ok=True)
-            pq.write_table(merged_weekly_table, path  + "/CW_" + str(week) + ".parquet")
+            pq.write_table(merged_weekly_table, path + "/CW_" + str(week) + ".parquet")
 
     # monthly
-    # output structure year/month
+    # output structure monthly/{year}_{month}.parquet
     if recurrence == "monthly":
         for (year, month), group in groupby(data, key=extract_year_month):
             monthly_tables = [table for _, table in group]
@@ -333,7 +331,6 @@ def main():
         type=str,
         help="Size of merged files: daily, weekly or monthly (day, week, month)",
     )
-
 
     parser.set_defaults(func=parquet_merger)
 
