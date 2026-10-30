@@ -134,6 +134,11 @@ def get_data(
         # CHECK TIMEGAPS BETWEEN SAMPLES
         index = pd.to_datetime(df_stub.index, unit="s")
         ts_ns = index.to_numpy(dtype="datetime64[ns]").astype("int64")
+
+        if len(ts_ns) < 2:
+            logging.warning(f"Not enough sample points in '{candidate}' to evaluate timesteps.")
+            return idx, table
+
         diffs_ns = np.diff(ts_ns)
 
         median_ns = float(np.median(diffs_ns))
