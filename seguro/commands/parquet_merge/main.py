@@ -215,6 +215,8 @@ def get_data(
 
 def merger(data: zip, output_path: str, recurrence: str):
 
+    Path(MERGED_DIR).mkdir(parents=True, exist_ok=True)
+
     def extract_calendar_date(pair):
         return pair[0].date()
 
