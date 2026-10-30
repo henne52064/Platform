@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import cProfile
 import pstats
+import numpy as np
 import pyarrow.parquet as pq
 import pyarrow as pa
 import io
@@ -20,6 +21,8 @@ from seguro.common.store import Client
 LOCAL_TMP = ".LOCAL/"
 REMOTE_FOLDER = "data/measurements/"
 MERGED_DIR = "merged/"
+
+SAMPLE_K = 4
 
 
 def resolve_timeframe(start_input: str, end_or_duration) -> tuple[datetime, datetime]:
@@ -103,7 +106,6 @@ def get_data(
     output_path: str,
     start_dt: datetime,
     end_dt: datetime,
-    epsilon: timedelta,
     max_workers: int = 16,
 ):
     """
@@ -129,7 +131,34 @@ def get_data(
         if not df_stub.index.is_monotonic_increasing:
             logging.warning(f"Timestamps in '{candidate}' are not monotonically increasing.")
 
-        return idx, table
+        # CHECK TIMEGAPS BETWEEN SAMPLES
+        index = pd.to_datetime(df_stub.index, unit="s")
+        ts_ns = index.to_numpy(dtype="datetime64[ns]").astype("int64")
+        diffs_ns = np.diff(ts_ns)
+
+        median_ns = float(np.median(diffs_ns))
+
+        mad_ns = max(1.4826 * float(np.median(np.abs(diffs_ns - median_ns))), 0.01 * median_ns)
+        upper_ns = median_ns + SAMPLE_K * mad_ns
+        lower_ns = median_ns - SAMPLE_K * mad_ns
+
+        expected = pd.Timedelta(int(median_ns), unit="ns")
+
+
+        for pos in np.flatnonzero(diffs_ns > upper_ns):
+            logging.warning(
+                f"Sample gap detected in '{candidate}' between '{index[pos]}' and '{index[pos + 1]}': "
+                f"Difference is {pd.Timedelta(int(diffs_ns[pos]), unit='ns')} "
+                f"(Expected ~{expected}, Threshold: {pd.Timedelta(int(upper_ns), unit='ns')})"
+            )
+        for pos in np.flatnonzero((diffs_ns <= 0) | (diffs_ns < lower_ns)):
+            logging.warning(
+                f"Too short sample interval in '{candidate}' between '{index[pos]}' and '{index[pos + 1]}': "
+                f"Difference is {pd.Timedelta(int(diffs_ns[pos]), unit='ns')} "
+                f"(Expected ~{expected}, Threshold: {pd.Timedelta(int(lower_ns), unit='ns')})"
+            )
+
+        return idx,table
 
     # Parallel download & sort file to correct position
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -137,19 +166,20 @@ def get_data(
         for future in as_completed(futures):
             idx, table = future.result()
             tables[idx] = table  # Keep original key order
-            clean_name = candidates[idx].removesuffix(".parquet").split("/")[-1]
+            clean_name = sorted_candidates[idx].removesuffix(".parquet").split("/")[-1]
             filename_dates[idx] = datetime.fromisoformat(clean_name)
 
     # Check filename timestamps
-
     dates_series = pd.Series(filename_dates)
     time_diffs = dates_series.diff().dropna()
 
-    median_diff = pd.Timedelta(time_diffs.median())
-    threshold = median_diff + epsilon
+    median_diff = time_diffs.median()
+    mad = 1.4826 * (time_diffs - median_diff).abs().median()
+    threshold = median_diff + max(SAMPLE_K * mad, 0.05 * median_diff)
 
     first_file = filename_dates[0]
     last_file = filename_dates[-1]
+
 
     start_diff = abs(first_file - start_dt)
     end_diff = abs(last_file - end_dt)
@@ -173,7 +203,7 @@ def get_data(
                 f"Time gap detected between '{prev_file}' and '{curr_file}': "
                 f"Difference is {diff} (Expected ~{median_diff}, Threshold: {threshold})"
             )
-
+    print(f"number of files {len(filename_dates)}")
     # zip data to combine filename with table
     data = zip(filename_dates, tables)
 
@@ -254,7 +284,6 @@ def parquet_merger(args):
         output_path=args.path,
         start_dt=start_dt,
         end_dt=end_dt,
-        epsilon=parse_duration(args.epsilon),
     )
 
     merger(data=data, output_path=args.path, recurrence=args.recurrence)
@@ -305,12 +334,6 @@ def main():
         help="Size of merged files: daily, weekly or monthly (day, week, month)",
     )
 
-    parser.add_argument(
-        "--epsilon",
-        default="30s",
-        type=str,
-        help="Set maximum deviation of timegap between files before giving out a warning",
-    )
 
     parser.set_defaults(func=parquet_merger)
 
