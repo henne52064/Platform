@@ -14,6 +14,7 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 from itertools import groupby
 from pathlib import Path
+from collections import defaultdict
 
 from seguro.common import config
 from seguro.common.store import Client
@@ -213,57 +214,77 @@ def get_data(
     return data
 
 
-def merger(data: zip, output_path: str, recurrence: str):
+def merge(data: zip, output_path: str, recurrence: str):
 
     Path(MERGED_DIR).mkdir(parents=True, exist_ok=True)
 
     def extract_calendar_date(pair):
         return pair[0].date()
 
-    def extract_isocalendar(pair):
-        iso_year, iso_week, _ = pair[0].isocalendar()
-        return (iso_year, iso_week)
+    def concat_and_save(tables, destination: str):
+        merged_table = pa.concat_tables(tables)
+        pq.write_table(merged_table, destination)
+        print(f"Saved: {destination}")
 
-    def extract_year_month(pair):
-        date_obj = pair[0]
-        return (date_obj.year, date_obj.month)
-
+    # Download
+    # Open + Load
     if recurrence == "single":
         tables_to_merge = [table for _, table in data]
         merged_table = pa.concat_tables(tables_to_merge)
         Path(output_path).mkdir(parents=True, exist_ok=True)
         pq.write_table(merged_table, output_path + "merged.parquet")
+        return
 
-    # daily
-    # output structure daily/year/month/{date}.parquet
-    if recurrence == "daily":
+    weekly_tables = defaultdict(list)
+    monthly_tables = defaultdict(list)
 
-        for current_date, group in groupby(data, key=extract_calendar_date):
-            daily_tables = [table for _, table in group]
-            merged_daily_table = pa.concat_tables(daily_tables)
-            path = output_path + "daily/" + str(current_date.year) + "/" + str(current_date.month)
-            Path(path).mkdir(parents=True, exist_ok=True)
-            pq.write_table(merged_daily_table, path + "/" + str(current_date) + ".parquet")
+    # merge daily files, collect data tables and add them to the right week/month
+    for current_date, group in groupby(data, key=extract_calendar_date):
 
-    # weekly
-    # output structure weekly/{year}_CW_{week}.parquet
-    if recurrence == "weekly":
-        for (year, week), group in groupby(data, key=extract_isocalendar):
-            weekly_tables = [table for _, table in group]
-            merged_weekly_table = pa.concat_tables(weekly_tables)
-            path = output_path + "weekly/" + str(year)
-            Path(path).mkdir(parents=True, exist_ok=True)
-            pq.write_table(merged_weekly_table, path + "/CW_" + str(week) + ".parquet")
+        daily_tables = [table for _, table in group]
 
-    # monthly
-    # output structure monthly/{year}_{month}.parquet
-    if recurrence == "monthly":
-        for (year, month), group in groupby(data, key=extract_year_month):
-            monthly_tables = [table for _, table in group]
-            merged_monthly_table = pa.concat_tables(monthly_tables)
-            path = output_path + "monthly/" + str(year)
-            Path(path).mkdir(parents=True, exist_ok=True)
-            pq.write_table(merged_monthly_table, path + "/month_" + str(month) + ".parquet")
+        if "daily" in recurrence:
+            dir = output_path + "daily/" + str(current_date.year) + "/" + str(current_date.month)
+            Path(dir).mkdir(parents=True, exist_ok=True)
+            path = dir + "/" + str(current_date) + ".parquet"
+            concat_and_save(daily_tables, path)
+
+        week_key = (current_date.isocalendar().year, current_date.isocalendar().week)
+        weekly_tables[week_key].extend(daily_tables)
+
+        month_key = (current_date.year, current_date.month)
+        monthly_tables[month_key].extend(daily_tables)
+
+    if "weekly" in recurrence:
+        for (year, week), tables in weekly_tables.items():
+            dir = output_path + "weekly/"
+            Path(dir).mkdir(parents=True, exist_ok=True)
+            path = dir + f"{year}_CW_{week:02d}.parquet"
+            concat_and_save(tables, path)
+
+    if "monthly" in recurrence:
+        for (year, month), tables in monthly_tables.items():
+            dir = output_path + "monthly/"
+            Path(dir).mkdir(parents=True, exist_ok=True)
+            path = dir + f"{year}_{month:02d}.parquet"
+            concat_and_save(tables, path)
+
+    # last check, TOBE REMOVED
+    weekly_dir = Path(MERGED_DIR + "/weekly")
+    for file in weekly_dir.iterdir():
+        table = pq.read_table(file)
+        df_stub = table.select([]).to_pandas()
+        if not df_stub.index.is_monotonic_increasing:
+            logging.warning(f"Timestamps in '{file}' are not monotonically increasing.")
+
+    monthly_dir = Path(MERGED_DIR + "/monthly")
+    for file in monthly_dir.iterdir():
+        table = pq.read_table(file)
+        df_stub = table.select([]).to_pandas()
+        if not df_stub.index.is_monotonic_increasing:
+            logging.warning(f"Timestamps in '{file}' are not monotonically increasing.")
+
+    return
 
 
 def parquet_merger(args):
@@ -291,8 +312,7 @@ def parquet_merger(args):
         end_dt=end_dt,
     )
 
-    merger(data=data, output_path=args.path, recurrence=args.recurrence)
-
+    merge(data=data, output_path=args.path, recurrence=args.recurrence)
     return 0
 
 
