@@ -49,10 +49,10 @@ def fetch_candidates(s: Client, start_dt: datetime, end_dt: datetime, args) -> l
     stops requesting additional pages as soon as an object key exceeds end_dt
     """
 
-    if args.gateway.endswith("/"):
-        remotepath = args.gateway
+    if args.path.endswith("/"):
+        remotepath = args.path
     else:
-        remotepath = args.gateway + "/"
+        remotepath = args.path + "/"
 
     start_after_key = f"{REMOTE_FOLDER + remotepath}{(start_dt - timedelta(seconds=1)).isoformat()}.parquet"
     end_key = f"{REMOTE_FOLDER + remotepath}{end_dt.isoformat()}.parquet"
@@ -230,9 +230,10 @@ def merge(data: zip, output_path: str, recurrence: str):
     # Open + Load
     if recurrence == "single":
         tables_to_merge = [table for _, table in data]
-        merged_table = pa.concat_tables(tables_to_merge)
-        Path(output_path).mkdir(parents=True, exist_ok=True)
-        pq.write_table(merged_table, output_path + "merged.parquet")
+        dir = output_path
+        Path(dir).mkdir(parents=True, exist_ok=True)
+        path = dir + "merged.parquet"
+        concat_and_save(tables_to_merge, path)
         return
 
     weekly_tables = defaultdict(list)
@@ -244,9 +245,9 @@ def merge(data: zip, output_path: str, recurrence: str):
         daily_tables = [table for _, table in group]
 
         if "daily" in recurrence:
-            dir = output_path + "daily/" + str(current_date.year) + "/" + str(current_date.month)
+            dir = output_path + f"daily/"
             Path(dir).mkdir(parents=True, exist_ok=True)
-            path = dir + "/" + str(current_date) + ".parquet"
+            path = dir + f"{current_date}.parquet"
             concat_and_save(daily_tables, path)
 
         week_key = (current_date.isocalendar().year, current_date.isocalendar().week)
@@ -269,21 +270,6 @@ def merge(data: zip, output_path: str, recurrence: str):
             path = dir + f"{year}_{month:02d}.parquet"
             concat_and_save(tables, path)
 
-    # last check, TOBE REMOVED
-    weekly_dir = Path(MERGED_DIR + "/weekly")
-    for file in weekly_dir.iterdir():
-        table = pq.read_table(file)
-        df_stub = table.select([]).to_pandas()
-        if not df_stub.index.is_monotonic_increasing:
-            logging.warning(f"Timestamps in '{file}' are not monotonically increasing.")
-
-    monthly_dir = Path(MERGED_DIR + "/monthly")
-    for file in monthly_dir.iterdir():
-        table = pq.read_table(file)
-        df_stub = table.select([]).to_pandas()
-        if not df_stub.index.is_monotonic_increasing:
-            logging.warning(f"Timestamps in '{file}' are not monotonically increasing.")
-
     return
 
 
@@ -298,21 +284,43 @@ def parquet_merger(args):
 
     print(f"start: {start_dt.isoformat()}, end: {end_dt.isoformat()}")
 
-    candidates = fetch_candidates(client, start_dt, end_dt, args)
+    if args.path.startswith("s3:"):
+        args.path = args.path.removeprefix("s3:")
 
-    if len(candidates) == 0:
-        print("No files found to merge")
-        return
+        candidates = fetch_candidates(client, start_dt, end_dt, args)
 
-    data = get_data(
-        candidates=candidates,
-        client=client,
-        output_path=args.path,
-        start_dt=start_dt,
-        end_dt=end_dt,
-    )
+        if len(candidates) == 0:
+            print("No files found to merge")
+            return
+        # merge with data from store
 
-    merge(data=data, output_path=args.path, recurrence=args.recurrence)
+        data = get_data(
+            candidates=candidates,
+            client=client,
+            output_path=args.output,
+            start_dt=start_dt,
+            end_dt=end_dt,
+        )
+    # merge local data, based on already downloaded daily files
+    else:
+        daily_tables = []
+        filename_dates = []
+
+        for path in sorted(Path(args.path).rglob("*.parquet")):
+            file_date = datetime.fromisoformat(path.stem).replace(tzinfo=start_dt.tzinfo)
+
+            if file_date < start_dt:
+                continue
+            if file_date > end_dt:
+                break
+
+            if start_dt <= file_date < end_dt:
+                filename_dates.append(file_date)
+                daily_tables.append(pq.read_table(path))
+
+        data = zip(filename_dates, daily_tables)
+
+    merge(data=data, output_path=args.output, recurrence=args.recurrence)
     return 0
 
 
@@ -336,16 +344,16 @@ def main():
     group.add_argument("-d", "--duration", type=str, help="Duration starting from start-timestamp")
 
     parser.add_argument(
-        "-g",
-        "--gateway",
+        "-p",
+        "--path",
         default="demo-data",
         type=str,
-        help="Gateway to merge sample data from. String in format <location-id>/<device_id>/<point_id>",
+        help="Path to merge sample data from. String in format s3:<location-id>/<device_id>/<point_id>, for local merge provide path to directory where daily files are stored",
     )
 
     parser.add_argument(
-        "-p",
-        "--path",
+        "-o",
+        "--output",
         default=MERGED_DIR,  # + "merged.parquet",
         type=str,
         help="Path or directory where to store merged file",
@@ -363,8 +371,8 @@ def main():
 
     args = parser.parse_args()
 
-    if not args.path.endswith("/"):
-        args.path = args.path + "/"
+    if not args.output.endswith("/"):
+        args.output = args.output + "/"
 
     if args.end is None and args.duration is None:
         parser.error("Use either --end or --duration, not both.")
