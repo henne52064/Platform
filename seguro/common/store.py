@@ -61,6 +61,7 @@ class Client:
         tls_key: str = config.TLS_KEY,
         region: str = config.S3_REGION,
         bucket: str = config.S3_BUCKET,
+        maxsize: int = 32,
     ):
         self.logger = logging.getLogger(__name__)
         self.bucket = bucket
@@ -73,14 +74,14 @@ class Client:
         if hasattr(ssl, "VERIFY_X509_STRICT"):
             ssl_context.verify_flags &= ~ssl.VERIFY_X509_STRICT
 
-        self.http_client = urllib3.PoolManager(ssl_context=ssl_context)
+        self.http_client = urllib3.PoolManager(ssl_context=ssl_context, maxsize=maxsize)
 
         self.creds = minio.credentials.CertificateIdentityProvider(
             sts_endpoint=f"https://{host}:{port}",
             cert_file=tls_cert,
             key_file=tls_key,
             ca_certs=tls_cacert,
-            http_client=urllib3.PoolManager(ssl_context=ssl_context),
+            http_client=urllib3.PoolManager(ssl_context=ssl_context, maxsize=maxsize),
         )
         self.client = minio.Minio(
             endpoint=f"{host}:{port}",

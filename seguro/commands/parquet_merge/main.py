@@ -107,7 +107,7 @@ def get_data(
     output_path: str,
     start_dt: datetime,
     end_dt: datetime,
-    max_workers: int = 16,
+    max_workers: int = 32,
 ):
     """
     Downloads parquet files concurrently into memory, validates metadata on the fly,
@@ -122,7 +122,12 @@ def get_data(
         # work with http response object to avoid disk I/O
         response = client.client.get_object(client.bucket, candidate)
 
-        data_bytes = response.read()
+        try:
+            data_bytes = response.read()
+        finally:
+            response.close()
+            response.release_conn()
+
         buffer = io.BytesIO(data_bytes)
 
         table = pq.read_table(buffer)
