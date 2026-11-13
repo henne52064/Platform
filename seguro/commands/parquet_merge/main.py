@@ -200,9 +200,6 @@ def get_data(
 
     # start boundary check
     if start_diff > threshold:
-        downtime = max(timedelta(), start_diff - median_diff)
-        total_downtime += downtime
-        gap_count += 1
         logging.warning(
             f"Time gap detected between start date '{start_dt}' and first file '{first_file}': "
             f"Difference is {start_diff} (Expected ~{median_diff}, Threshold: {threshold})"
@@ -223,10 +220,6 @@ def get_data(
             )
 
     if end_diff > threshold:  # end boundary check
-        downtime = max(timedelta(), end_diff - median_diff)
-        total_downtime += downtime
-        gap_count += 1
-        longest_outage = max(longest_outage, downtime)
         logging.warning(
             f"Time gap detected between last file '{last_file}' and end date '{end_dt}': "
             f"Difference is {end_diff} (Expected ~{median_diff}, Threshold: {threshold})"
