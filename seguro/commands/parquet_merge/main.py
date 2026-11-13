@@ -247,7 +247,7 @@ def merge(data: zip, output_path: str, recurrence: str):
         return pair[0].date()
 
     def concat_and_save(tables, destination: str):
-        merged_table = pa.concat_tables(tables)
+        merged_table = pa.concat_tables(tables, promote_options="default")
         pq.write_table(merged_table, destination)
         logging.info(f"Saved: {destination}")
 
