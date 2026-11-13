@@ -331,6 +331,19 @@ def parquet_merger(args):
             start_dt=start_dt,
             end_dt=end_dt,
         )
+
+        report = (
+                    f"\n--- Uptime Report ---\n"
+                    f"Total Window:    {uptime_data[0]}\n"
+                    f"Total Uptime:    {uptime_data[1]} ({uptime_data[2]:.2f}%)\n"
+                    f"Total Downtime:  {uptime_data[3]}\n"
+                    f"Outage Count:    {uptime_data[4]}\n"
+                    f"Longest Outage:  {uptime_data[5]}\n"
+                    f"---------------------"
+                    f"\nTotal number of merged files: {num_files}"
+                )
+        logging.info(report)
+
     # merge local data, based on already downloaded daily files
     else:
         daily_tables = []
@@ -351,21 +364,6 @@ def parquet_merger(args):
         data = zip(filename_dates, daily_tables)
 
     merge(data=data, output_path=args.output, recurrence=args.recurrence)
-
-    # final stats
-    if uptime_data is not None:
-        report = (
-            f"\n--- Uptime Report ---\n"
-            f"Total Window:    {uptime_data[0]}\n"
-            f"Total Uptime:    {uptime_data[1]} ({uptime_data[2]:.2f}%)\n"
-            f"Total Downtime:  {uptime_data[3]}\n"
-            f"Outage Count:    {uptime_data[4]}\n"
-            f"Longest Outage:  {uptime_data[5]}\n"
-            f"---------------------"
-        )
-        if num_files is not None:
-            report += f"\nTotal number of merged files: {num_files}"
-        logging.info(report)
 
     return 0
 
