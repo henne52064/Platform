@@ -6,6 +6,9 @@ build/
 data/
 docs/_autosummary/
 
+/merged
+.python-version
+
 .direnv/
 
 .env
