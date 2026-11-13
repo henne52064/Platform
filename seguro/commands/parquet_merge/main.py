@@ -256,7 +256,7 @@ def merge(data: zip, output_path: str, recurrence: str):
     def concat_and_save(tables, destination: str):
         merged_table = pa.concat_tables(tables)
         pq.write_table(merged_table, destination)
-        print(f"Saved: {destination}")
+        logging.info(f"Saved: {destination}")
 
     # Download
     # Open + Load
@@ -420,9 +420,26 @@ def main():
         help="Size of merged files: daily, weekly or monthly (day, week, month)",
     )
 
+    parser.add_argument(
+        "--logfile",
+        default="app.log",
+        type=str,
+        help="Path of log file",
+    )
+
     parser.set_defaults(func=parquet_merger)
 
     args = parser.parse_args()
+
+
+    logging.basicConfig(
+       level=logging.DEBUG if config.DEBUG else logging.INFO,
+        format="%(levelname)s %(name)s %(message)s",
+        handlers=[
+            logging.FileHandler(args.logfile),
+            logging.StreamHandler()
+        ]
+    )
 
     if not args.output.endswith("/"):
         args.output = args.output + "/"
