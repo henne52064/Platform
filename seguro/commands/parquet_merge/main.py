@@ -116,6 +116,7 @@ def get_data(
     tables = [None] * len(candidates)
     sorted_candidates = sorted(candidates)
     filename_dates: list[datetime | None] = [None] * len(candidates)
+    total_duration = end_dt - start_dt
 
     def _download_and_parse(idx: int, candidate: str):
         # Fetch directly into bytes buffer
@@ -187,36 +188,62 @@ def get_data(
     mad = 1.4826 * (time_diffs - median_diff).abs().median()
     threshold = median_diff + max(SAMPLE_K * mad, 0.05 * median_diff)
 
+    total_downtime = timedelta()
+    gap_count = 0
+    longest_outage = timedelta()
+
     first_file = filename_dates[0]
     last_file = filename_dates[-1]
 
     start_diff = abs(first_file - start_dt)
     end_diff = abs(last_file - end_dt)
 
-    if start_diff > threshold:  # check if first file is close to start datetime
+    # start boundary check
+    if start_diff > threshold:
+        downtime = max(timedelta(), start_diff - median_diff)
+        total_downtime += downtime
+        gap_count += 1
         logging.warning(
             f"Time gap detected between start date '{start_dt}' and first file '{first_file}': "
             f"Difference is {start_diff} (Expected ~{median_diff}, Threshold: {threshold})"
         )
-    if end_diff > threshold:  # check if last file is close to end datetime
+
+    # inbetween file gaps
+    for idx, diff in enumerate(time_diffs, start=1):
+        if diff > threshold:
+            prev_file = filename_dates[idx - 1]
+            curr_file = filename_dates[idx]
+            downtime = max(timedelta(), diff - median_diff)
+            total_downtime += downtime
+            gap_count += 1
+            longest_outage = max(longest_outage, downtime)
+            logging.warning(
+                f"Time gap detected between '{prev_file}' and '{curr_file}': "
+                f"Difference is {diff} (Expected ~{median_diff}, Threshold: {threshold})"
+            )
+
+    if end_diff > threshold:  # end boundary check
+        downtime = max(timedelta(), end_diff - median_diff)
+        total_downtime += downtime
+        gap_count += 1
+        longest_outage = max(longest_outage, downtime)
         logging.warning(
             f"Time gap detected between last file '{last_file}' and end date '{end_dt}': "
             f"Difference is {end_diff} (Expected ~{median_diff}, Threshold: {threshold})"
         )
 
-    for idx, diff in enumerate(time_diffs, start=1):
-        if diff > threshold:
-            prev_file = filename_dates[idx - 1]
-            curr_file = filename_dates[idx]
-            logging.warning(
-                f"Time gap detected between '{prev_file}' and '{curr_file}': "
-                f"Difference is {diff} (Expected ~{median_diff}, Threshold: {threshold})"
-            )
-    print(f"number of files {len(filename_dates)}")
+    # Calculate Uptime
+    uptime_duration = max(timedelta(), total_duration - total_downtime)
+    uptime_pct = (uptime_duration.total_seconds() / total_duration.total_seconds()) * 100
+    uptime_pct = max(0.0, min(100.0, uptime_pct))
+
+    uptime_report = [total_duration, uptime_duration, uptime_pct, total_downtime, gap_count, longest_outage]
+
+    num_files = len(filename_dates)
     # zip data to combine filename with table
     data = zip(filename_dates, tables)
 
-    return data
+    return data, uptime_report, num_files
 
 
 def merge(data: zip, output_path: str, recurrence: str):
@@ -287,7 +314,12 @@ def parquet_merger(args):
     if args.end is None and args.duration is not None:
         start_dt, end_dt = resolve_timeframe(args.start, parse_duration(args.duration))
 
-    print(f"start: {start_dt.isoformat()}, end: {end_dt.isoformat()}")
+    total_duration = end_dt - start_dt
+    if total_duration <= timedelta(0):
+        logging.error("Invalid timeframe: end_dt must be greater than start_dt.")
+        return
+
+    logging.info(f"start: {start_dt.isoformat()}, end: {end_dt.isoformat()}")
 
     if args.path.startswith("s3:"):
         args.path = args.path.removeprefix("s3:")
@@ -299,7 +331,7 @@ def parquet_merger(args):
             return
         # merge with data from store
 
-        data = get_data(
+        data, uptime_data, num_files = get_data(
             candidates=candidates,
             client=client,
             output_path=args.output,
@@ -326,6 +358,22 @@ def parquet_merger(args):
         data = zip(filename_dates, daily_tables)
 
     merge(data=data, output_path=args.output, recurrence=args.recurrence)
+
+    # final stats
+    if uptime_data is not None:
+        report = (
+            f"\n--- Uptime Report ---\n"
+            f"Total Window:    {uptime_data[0]}\n"
+            f"Total Uptime:    {uptime_data[1]} ({uptime_data[2]:.2f}%)\n"
+            f"Total Downtime:  {uptime_data[3]}\n"
+            f"Outage Count:    {uptime_data[4]}\n"
+            f"Longest Outage:  {uptime_data[5]}\n"
+            f"---------------------"
+        )
+        if num_files is not None:
+            report += f"\nTotal number of merged files: {num_files}"
+        logging.info(report)
+
     return 0
 
 
