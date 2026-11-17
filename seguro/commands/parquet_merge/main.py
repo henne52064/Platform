@@ -427,7 +427,7 @@ def main():
        level=logging.DEBUG if config.DEBUG else logging.INFO,
         format="%(levelname)s %(name)s %(message)s",
         handlers=[
-            logging.FileHandler(args.logfile),
+            logging.FileHandler(args.logfile, mode='w'),
             logging.StreamHandler()
         ]
     )
@@ -438,14 +438,14 @@ def main():
     if args.end is None and args.duration is None:
         parser.error("Use either --end or --duration, not both.")
 
-    profiler = cProfile.Profile()
-    profiler.enable()
+    # profiler = cProfile.Profile()
+    # profiler.enable()
     args.func(args)
 
-    profiler.disable()
+    # profiler.disable()
 
-    stats = pstats.Stats(profiler).sort_stats("cumtime")
-    stats.print_stats(20)
+    # stats = pstats.Stats(profiler).sort_stats("cumtime")
+    # stats.print_stats(20)
     return
 
 
